@@ -1,19 +1,29 @@
 import cv2
 import os
 import numpy as np
+import torch
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
 from sklearn.cluster import KMeans
 from datetime import datetime
-from win32api import GetSystemMetrics  # For screen size
 from PIL import ImageGrab  # For screen capture
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter # For debugging label distribution
+import sys     #Need it to import the sys to access the folder path where the yolov5 is located.
+sys.path.insert(0, '/home/pi/yolov5')  # Adjust this if your yolov5 folder is in another path
+
+from models.common import DetectMultiBackend  # This is the core model class
+
 
 # Define folder path for image processing
-folder_path = r"C:\Users\benne\Desktop\Image Classifier_ Data & Code\Data_File_3_Upd_Color_Block_Pics"
+folder_path = "/home/pi/Data_File_3_Upd_Color_Block_Pics"
+
+#Start the Artificial Inteligence (YOLOv5 model)
+model_path = "/home/pi/yolov5s.pt"  # Path to where the yolov5 model is stored.
+device = torch.device("cpu")
+yolo = DetectMultiBackend(model_path, device=device)
 
 # Helper function: Normalize brightness
 def normalize_brightness(image_hsv):
@@ -167,34 +177,68 @@ def classify_webcam_frame(frame):
     return label
 
 def record_video_with_webcam():
-    webcam = cv2.VideoCapture(0)  # Index 1 for default webcam
+    webcam = cv2.VideoCapture(0)  # Index 0 for default webcam
     
     while True:
         ret, frame = webcam.read()
         if not ret:
             print("Failed to capture webcam frame.")
             break
+
+
+        # Preprocess for YOLO (but don't overwrite the original frame)
+        img_clone = frame.copy()
+        img_tensor = torch.from_numpy(frame.copy()).permute(2, 0, 1).unsqueeze(0).to(device).float() / 255.0
+
+
+        with torch.no_grad():
+            results = yolo(img_tensor, augment=False) 
+           # print("type of results =", type(results))
+           # print("type of results[0] =", type(results[0]))
+           # print("Detection example:", results[0][0])
+        detections = results[0].cpu()
+
+
+        # Draw YOLO detections on original frame
+        for det in detections[0]:
+           # print("Detection example:", det.tolist()) 
+            det = det.cpu()
+            if det.shape[0] >= 6:  # Ensure correct shape
+                x1, y1, x2, y2, conf, cls = det[:6].tolist()
         
-        # Classify the color of the frame
+           #Print coordinares to see what yolo is seeing
+           # print(f"Coords: x1={x1:.1f}, y1={y1:.1f}, x2={x2:.1f}, y2={y2:.1f}, conf={conf:.2f}, class={cls}")
+           # Sanity check for invalid coordinates
+            if not all(0 <= val <= 10000 for val in [x1, y1, x2, y2]):
+                    print("⚠️ Skipping crazy box:", x1, y1, x2, y2)
+                    continue
+        
+            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+            label_name = yolo.names[int(cls)] if hasattr(yolo, "names") else str(int(cls))
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(frame, label_name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # Color classification
         label = classify_webcam_frame(frame)
-        
-        # Show the frame
         cv2.putText(frame, f"Label: {label}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.imshow("Webcam Color Classification", frame)
-        
-        # Exit on pressing 'p'
+
+        # Show the frame
+        cv2.imshow("Webcam - Color + YOLO Detection", frame)
+
+        # Exit with 'p'
         if cv2.waitKey(1) == ord('p'):
             break
-    
+
     webcam.release()
     cv2.destroyAllWindows()
 
 # Main script
 if __name__ == "__main__":
-    # Load and process images
+#    Load and process images
     data, labels = load_and_process_images_sequential(folder_path)
     if data is not None and labels is not None:
-        print(f"Processed {len(data)} images with {len(set(labels))} unique labels.")
+       print(f"Processed {len(data)} images with {len(set(labels))} unique labels.")
     
     # Train and evaluate the classifier
     train_and_evaluate_classifier(data, labels)
@@ -202,3 +246,5 @@ if __name__ == "__main__":
     # Now, start the webcam and screen capture recording
     
     record_video_with_webcam()
+
+
